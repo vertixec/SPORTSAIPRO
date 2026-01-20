@@ -20,11 +20,11 @@ import {
 } from 'lucide-react';
 
 // --- CONFIGURACIÓN DE CONEXIÓN N8N (Hostinger) ---
-const N8N_ENDPOINT = "https://n8n.srv1254414.hstgr.cloud/webhook-test/analyze-match";
+const N8N_ENDPOINT = process.env.REACT_APP_N8N_ENDPOINT;
 
 // --- CONFIGURACIÓN API DEPORTIVA ---
-const API_KEY = "10f444b8b9b4ccc81bbb860fd18849ba";
-const API_HOST = "v3.football.api-sports.io";
+const API_KEY = process.env.REACT_APP_APISPORTS_KEY;
+const API_HOST = process.env.REACT_APP_APISPORTS_HOST || "v3.football.api-sports.io";
 
 const LIGAS = [
   { id: 140, name: "La Liga", country: "España", logo: "https://media.api-sports.io/football/leagues/140.png" },
