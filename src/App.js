@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { supabase } from "./supabaseClient";
 import { 
   Trophy,
   History,
@@ -74,38 +75,88 @@ const App = () => {
     localStorage.setItem('sportai_favorites', JSON.stringify(favorites));
   }, [favorites]);
 
-  // --- LÓGICA DE CONEXIÓN N8N (Integrada en Login) ---
-  const handleLogin = async (e) => {
-    e.preventDefault();
-    setLoading(true);
-    setConnStatus({ type: 'testing', message: "Conectando con Backend n8n..." });
+  useEffect(() => {
+  const init = async () => {
+    const { data } = await supabase.auth.getSession();
+    const session = data.session;
 
-    try {
-      const response = await fetch(N8N_ENDPOINT, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          action: "auth_test", 
-          user: authForm.user,
-          timestamp: new Date().toISOString()
-        })
-      });
-
-      if (response.ok) {
-        setConnStatus({ type: 'success', message: "Autenticación Exitosa." });
-        setTimeout(() => {
-          setUser({ name: authForm.user, id: 'u1' });
-          setView('dashboard');
-        }, 1000);
-      } else {
-        setConnStatus({ type: 'error', message: `Error ${response.status}: Webhook inactivo.` });
-      }
-    } catch (error) {
-      setConnStatus({ type: 'error', message: "Fallo de red: No se pudo contactar con n8n." });
-    } finally {
-      setLoading(false);
+    if (session?.user) {
+      setUser({ name: session.user.email, id: session.user.id });
+      setView("dashboard");
+      await loadUserData(session.user.id);
     }
   };
+  init();
+}, []);
+
+const loadUserData = async (userId) => {
+  const favRes = await supabase
+    .from("favorites")
+    .select("*")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false });
+
+  if (!favRes.error) {
+    setFavorites(favRes.data.map(r => ({
+      id: r.team_id,
+      name: r.team_name,
+      logo: r.team_logo
+    })));
+  }
+
+  const histRes = await supabase
+    .from("history")
+    .select("*")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false });
+
+  if (!histRes.error) {
+    setSavedAnalysis(histRes.data.map(r => ({
+      id: r.id,
+      match: r.match,
+      scenario: r.scenario,
+      prob: r.prob,
+      status: r.status
+    })));
+  }
+};
+
+
+
+  // --- LÓGICA DE CONEXIÓN Supabase (Integrada en Login) ---
+  const handleLogin = async (e) => {
+  e.preventDefault();
+  setLoading(true);
+  setConnStatus({ type: "testing", message: "Iniciando sesión..." });
+
+  try {
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email: authForm.user,
+      password: authForm.pass
+    });
+
+    if (error) {
+      setConnStatus({ type: "error", message: error.message });
+      return;
+    }
+
+    setConnStatus({ type: "success", message: "Sesión iniciada." });
+
+    // usuario real
+    const u = data.user;
+    setUser({ name: u.email, id: u.id });
+    setView("dashboard");
+
+    // cargar data del usuario (lo agregamos en el paso 7)
+    await loadUserData(u.id);
+
+  } catch (err) {
+    setConnStatus({ type: "error", message: "Error de red." });
+  } finally {
+    setLoading(false);
+  }
+};
+
 
   const generateAIScenarios = useCallback((match) => {
     const seed = match.fixture?.id || Math.random() * 1000;
@@ -172,13 +223,31 @@ const App = () => {
     if (user && view === 'dashboard') fetchMatches(selectedLeague.id);
   }, [selectedLeague, user, view]);
 
-  const toggleFavorite = (team) => {
-    if (favorites.find(f => f.id === team.id)) {
-      setFavorites(favorites.filter(f => f.id !== team.id));
-    } else {
-      setFavorites([...favorites, team]);
-    }
-  };
+  const toggleFavorite = async (team) => {
+  if (!user?.id) return;
+
+  const exists = favorites.find(f => f.id === team.id);
+
+  if (exists) {
+    await supabase
+      .from("favorites")
+      .delete()
+      .eq("user_id", user.id)
+      .eq("team_id", team.id);
+
+    setFavorites(favorites.filter(f => f.id !== team.id));
+  } else {
+    await supabase.from("favorites").insert([{
+      user_id: user.id,
+      team_id: team.id,
+      team_name: team.name,
+      team_logo: team.logo
+    }]);
+
+    setFavorites([...favorites, team]);
+  }
+};
+
 
   const filteredTeams = useMemo(() => {
     const term = searchTerm.toLowerCase().trim();
@@ -222,7 +291,7 @@ const App = () => {
                 type="text" 
                 required 
                 className="w-full bg-slate-950/50 border border-slate-800 rounded-2xl px-5 py-4 text-white placeholder:text-slate-700 outline-none focus:border-emerald-500/50 transition-all" 
-                placeholder="Usuario" 
+                placeholder="Email" 
                 value={authForm.user} 
                 onChange={e => setAuthForm({...authForm, user: e.target.value})} 
               />
@@ -253,6 +322,30 @@ const App = () => {
               className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-black py-5 rounded-2xl transition-all uppercase tracking-widest text-xs shadow-xl shadow-emerald-600/20 flex items-center justify-center gap-3"
             >
               {loading ? "CONECTANDO..." : "INICIAR SESIÓN"}
+            </button>
+            <button
+              type="button"
+              disabled={loading}
+              onClick={async () => {
+                setLoading(true);
+                setConnStatus({ type: "testing", message: "Creando cuenta..." });
+
+                const { error } = await supabase.auth.signUp({
+                  email: authForm.user,
+                  password: authForm.pass
+                });
+
+                if (error) {
+                  setConnStatus({ type: "error", message: error.message });
+                } else {
+                  setConnStatus({ type: "success", message: "Cuenta creada. Inicia sesión." });
+                }
+
+                setLoading(false);
+              }}
+              className="w-full bg-slate-950 hover:bg-slate-900 disabled:opacity-50 text-white font-black py-5 rounded-2xl transition-all uppercase tracking-widest text-xs border border-white/10"
+            >
+              CREAR CUENTA
             </button>
           </form>
         </div>
@@ -288,7 +381,14 @@ const App = () => {
         </nav>
 
         <div className={`p-6 transition-all ${!sidebarHover && 'px-4'}`}>
-          <button onClick={() => { setUser(null); setView('login'); setConnStatus({type:null, message:''}); }} className={`w-full flex items-center gap-4 px-5 py-4 rounded-2xl text-rose-500 hover:bg-rose-500/10 transition-all ${!sidebarHover && 'justify-center px-0'}`}>
+          <button onClick={async () => {
+  await supabase.auth.signOut();
+  setUser(null);
+  setView("login");
+  setConnStatus({ type: null, message: "" });
+}}
+
+          className={`w-full flex items-center gap-4 px-5 py-4 rounded-2xl text-rose-500 hover:bg-rose-500/10 transition-all ${!sidebarHover && 'justify-center px-0'}`}>
             <LogOut size={20} className="shrink-0" /> 
             {sidebarHover && <span className="font-black text-xs uppercase tracking-widest animate-in fade-in">Salir</span>}
           </button>
@@ -514,7 +614,36 @@ const App = () => {
                   <div className="text-5xl font-black text-white italic mb-4">{s.prob}%</div>
                   <h4 className="text-lg font-black text-white uppercase mb-2 leading-tight">{s.label}</h4>
                   <div className="bg-emerald-500/10 text-emerald-500 px-3 py-1 rounded-full text-[10px] font-black border border-emerald-500/10 inline-block mb-8 tracking-widest uppercase">Cuota {s.odds}</div>
-                  <button onClick={() => setSavedAnalysis([{ id: Date.now(), match: `${selectedMatch.teams.home.name} vs ${selectedMatch.teams.away.name}`, scenario: s.label, prob: s.prob, status: 'pending' }, ...savedAnalysis])} className="w-full bg-slate-950 hover:bg-emerald-600 text-slate-400 hover:text-white py-4 rounded-2xl font-black text-[10px] uppercase tracking-widest transition-all">Fijar Predicción</button>
+                  <button  onClick={async () => {
+  if (!user?.id) return;
+
+  const payload = {
+    user_id: user.id,
+    match: `${selectedMatch.teams.home.name} vs ${selectedMatch.teams.away.name}`,
+    scenario: s.label,
+    prob: s.prob,
+    status: "pending"
+  };
+
+  const { data, error } = await supabase
+    .from("history")
+    .insert([payload])
+    .select()
+    .single();
+
+  if (!error && data) {
+    setSavedAnalysis([{
+      id: data.id,
+      match: data.match,
+      scenario: data.scenario,
+      prob: data.prob,
+      status: data.status
+    }, ...savedAnalysis]);
+  }
+}}
+
+                  className="w-full bg-slate-950 hover:bg-emerald-600 text-slate-400 hover:text-white py-4 rounded-2xl font-black text-[10px] uppercase tracking-widest transition-all">Fijar Predicción
+                  </button>
                 </div>
               ))}
             </div>
@@ -535,8 +664,17 @@ const App = () => {
                   </div>
                 </div>
                 <div className="flex gap-2">
-                  <button onClick={() => setSavedAnalysis(savedAnalysis.map(a => a.id === item.id ? {...a, status: 'won'} : a))} className={`w-10 h-10 rounded-lg flex items-center justify-center transition-all ${item.status === 'won' ? 'bg-emerald-600' : 'bg-slate-950 text-slate-700'}`}><CheckCircle2 size={16} /></button>
-                  <button onClick={() => setSavedAnalysis(savedAnalysis.map(a => a.id === item.id ? {...a, status: 'lost'} : a))} className={`w-10 h-10 rounded-lg flex items-center justify-center transition-all ${item.status === 'lost' ? 'bg-rose-600' : 'bg-slate-950 text-slate-700'}`}><XCircle size={16} /></button>
+                  <button onClick={async () => {
+  await supabase.from("history").update({ status: "won" }).eq("id", item.id);
+  setSavedAnalysis(savedAnalysis.map(a => a.id === item.id ? { ...a, status: "won" } : a));
+}}
+ className={`w-10 h-10 rounded-lg flex items-center justify-center transition-all ${item.status === 'won' ? 'bg-emerald-600' : 'bg-slate-950 text-slate-700'}`}><CheckCircle2 size={16} /></button>
+                  <button onClick={async () => {
+  await supabase.from("history").update({ status: "lost" }).eq("id", item.id);
+  setSavedAnalysis(savedAnalysis.map(a => a.id === item.id ? { ...a, status: "lost" } : a));
+}}
+
+                  className={`w-10 h-10 rounded-lg flex items-center justify-center transition-all ${item.status === 'lost' ? 'bg-rose-600' : 'bg-slate-950 text-slate-700'}`}><XCircle size={16} /></button>
                 </div>
               </div>
             )) : (
