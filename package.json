@@ -18,6 +18,7 @@
     "start": "react-scripts start",
     "build": "react-scripts build"
   },
+  "proxy": "https://v3.football.api-sports.io",
   "browserslist": {
     "production": [
       ">0.2%",

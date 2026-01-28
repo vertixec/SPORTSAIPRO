@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { supabase } from "./supabaseClient";
-import { 
+import {
   Trophy,
   History,
   CheckCircle2,
@@ -47,7 +47,7 @@ const ALL_TEAMS = Object.values(MOCK_TEAMS).flat();
 
 const App = () => {
   const [user, setUser] = useState(null);
-  const [view, setView] = useState('login'); 
+  const [view, setView] = useState('login');
   const [sidebarHover, setSidebarHover] = useState(false);
   const [selectedLeague, setSelectedLeague] = useState(LIGAS[0]);
   const [matches, setMatches] = useState([]);
@@ -56,7 +56,12 @@ const App = () => {
   const [authForm, setAuthForm] = useState({ user: '', pass: '' });
   const [searchTerm, setSearchTerm] = useState("");
   const [connStatus, setConnStatus] = useState({ type: null, message: "" });
-  
+
+  // Estado para datos de equipos favoritos con caché
+  const [teamData, setTeamData] = useState({});
+
+  const [loadingTeamData, setLoadingTeamData] = useState(false);
+
   const [favorites, setFavorites] = useState(() => {
     const saved = localStorage.getItem('sportai_favorites');
     return saved ? JSON.parse(saved) : [];
@@ -75,87 +80,90 @@ const App = () => {
     localStorage.setItem('sportai_favorites', JSON.stringify(favorites));
   }, [favorites]);
 
-  useEffect(() => {
-  const init = async () => {
-    const { data } = await supabase.auth.getSession();
-    const session = data.session;
 
-    if (session?.user) {
-      setUser({ name: session.user.email, id: session.user.id });
-      setView("dashboard");
-      await loadUserData(session.user.id);
+
+
+  useEffect(() => {
+    const init = async () => {
+      const { data } = await supabase.auth.getSession();
+      const session = data.session;
+
+      if (session?.user) {
+        setUser({ name: session.user.email, id: session.user.id });
+        setView("dashboard");
+        await loadUserData(session.user.id);
+      }
+    };
+    init();
+  }, []);
+
+  const loadUserData = async (userId) => {
+    const favRes = await supabase
+      .from("favorites")
+      .select("*")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: false });
+
+    if (!favRes.error) {
+      setFavorites(favRes.data.map(r => ({
+        id: r.team_id,
+        name: Array.isArray(r.team_name) ? r.team_name[0] : r.team_name,
+        logo: r.team_logo
+      })));
+    }
+
+    const histRes = await supabase
+      .from("history")
+      .select("*")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: false });
+
+    if (!histRes.error) {
+      setSavedAnalysis(histRes.data.map(r => ({
+        id: r.id,
+        match: r.match,
+        scenario: r.scenario,
+        prob: r.prob,
+        status: r.status
+      })));
     }
   };
-  init();
-}, []);
-
-const loadUserData = async (userId) => {
-  const favRes = await supabase
-    .from("favorites")
-    .select("*")
-    .eq("user_id", userId)
-    .order("created_at", { ascending: false });
-
-  if (!favRes.error) {
-    setFavorites(favRes.data.map(r => ({
-      id: r.team_id,
-      name: r.team_name,
-      logo: r.team_logo
-    })));
-  }
-
-  const histRes = await supabase
-    .from("history")
-    .select("*")
-    .eq("user_id", userId)
-    .order("created_at", { ascending: false });
-
-  if (!histRes.error) {
-    setSavedAnalysis(histRes.data.map(r => ({
-      id: r.id,
-      match: r.match,
-      scenario: r.scenario,
-      prob: r.prob,
-      status: r.status
-    })));
-  }
-};
 
 
 
   // --- LÓGICA DE CONEXIÓN Supabase (Integrada en Login) ---
   const handleLogin = async (e) => {
-  e.preventDefault();
-  setLoading(true);
-  setConnStatus({ type: "testing", message: "Iniciando sesión..." });
+    e.preventDefault();
+    setLoading(true);
+    setConnStatus({ type: "testing", message: "Iniciando sesión..." });
 
-  try {
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email: authForm.user,
-      password: authForm.pass
-    });
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: authForm.user,
+        password: authForm.pass
+      });
 
-    if (error) {
-      setConnStatus({ type: "error", message: error.message });
-      return;
+      if (error) {
+        setConnStatus({ type: "error", message: error.message });
+        return;
+      }
+
+      setConnStatus({ type: "success", message: "Sesión iniciada." });
+
+      // usuario real
+      const u = data.user;
+      setUser({ name: u.email, id: u.id });
+      setView("dashboard");
+
+      // cargar data del usuario (lo agregamos en el paso 7)
+      await loadUserData(u.id);
+
+    } catch (err) {
+      setConnStatus({ type: "error", message: "Error de red." });
+    } finally {
+      setLoading(false);
     }
-
-    setConnStatus({ type: "success", message: "Sesión iniciada." });
-
-    // usuario real
-    const u = data.user;
-    setUser({ name: u.email, id: u.id });
-    setView("dashboard");
-
-    // cargar data del usuario (lo agregamos en el paso 7)
-    await loadUserData(u.id);
-
-  } catch (err) {
-    setConnStatus({ type: "error", message: "Error de red." });
-  } finally {
-    setLoading(false);
-  }
-};
+  };
 
 
   const generateAIScenarios = useCallback((match) => {
@@ -164,7 +172,7 @@ const loadUserData = async (userId) => {
       const x = Math.sin(seed * m) * 10000;
       return Math.floor((x - Math.floor(x)) * (max - min + 1)) + min;
     };
-    
+
     return [
       { id: `s1-${seed}`, label: "Más de 2.5 Goles", prob: pseudoRand(1, 65, 92), odds: 1.85, risk: "Bajo" },
       { id: `s2-${seed}`, label: `Victoria ${match.teams.home.name}`, prob: pseudoRand(2, 40, 75), odds: 2.20, risk: "Medio" },
@@ -190,11 +198,11 @@ const loadUserData = async (userId) => {
 
   const fetchMatches = async (leagueId) => {
     setLoading(true);
-    const proxy = "https://corsproxy.io/?";
-    const target = `https://${API_HOST}/fixtures?date=${new Date().toISOString().split('T')[0]}&league=${leagueId}`;
-    
+    // USANDO PROXY LOCAL (definido en package.json)
+    const target = `/fixtures?date=${new Date().toISOString().split('T')[0]}&league=${leagueId}`;
+
     try {
-      const res = await fetch(proxy + encodeURIComponent(target), {
+      const res = await fetch(target, {
         headers: { "x-apisports-key": API_KEY, "x-apisports-host": API_HOST }
       });
       const data = await res.json();
@@ -219,34 +227,212 @@ const loadUserData = async (userId) => {
     } finally { setTimeout(() => setLoading(false), 800); }
   };
 
+  // Función ACTUALIZADA: Obtener todos los partidos de MAÑANA y filtrar por equipo
+  const fetchTeamFixtures = async (teamId) => {
+    // 1. Calcular fecha de MAÑANA
+    const today = new Date();
+    const tomorrow = new Date(today);
+    tomorrow.setDate(today.getDate());
+    const dateStr = tomorrow.toISOString().split('T')[0];
+
+    // 2. Pedir TODOS los partidos de esa fecha
+    // Nota: Esto descarga muchos datos, pero es lo que solicitó el usuario para filtrar localmente
+    const target = `/fixtures?date=${dateStr}`;
+
+    try {
+      console.log(`🔍 Fetching ALL fixtures for date ${dateStr} looking for team ${teamId}...`);
+
+      const res = await fetch(target, {
+        headers: {
+          "x-apisports-key": API_KEY,
+          "x-apisports-host": API_HOST
+        }
+      });
+
+      const data = await res.json();
+
+      if (data.errors && Object.keys(data.errors).length > 0) {
+        console.error('❌ API Error:', data.errors);
+        return [];
+      }
+
+      if (data.response?.length > 0) {
+        // 3. Filtrar localmente por el ID del equipo (Local o Visitante)
+        const teamMatches = data.response.filter(
+          match => match.teams.home.id === teamId || match.teams.away.id === teamId
+        );
+
+        if (teamMatches.length > 0) {
+          console.log(`✅ Found match for team ${teamId} on ${dateStr}`);
+          return teamMatches;
+        } else {
+          console.log(`⚠️ No match found for team ${teamId} on ${dateStr}`);
+          return [];
+        }
+      }
+
+      return [];
+    } catch (error) {
+      console.error('❌ Fetch team fixtures failed:', error.message);
+      return [];
+    }
+  };
+
+  // Función para obtener estadísticas del equipo
+  const fetchTeamStatistics = async (teamId, leagueId) => {
+    // CORRECCIÓN DE TEMPORADA:
+    // Si estamos en los primeros meses del año (Ene-Jul), la temporada actual europea empezó el año anterior.
+    const now = new Date();
+    const currentYear = now.getFullYear();
+    const currentMonth = now.getMonth(); // 0 = Enero
+    const season = currentMonth < 6 ? currentYear - 1 : currentYear;
+
+    const target = `/teams/statistics?team=${teamId}&season=${season}&league=${leagueId}`;
+
+    try {
+      console.log(`� Fetching statistics for team ${teamId} (Season ${season})...`);
+
+      const res = await fetch(target, {
+        headers: {
+          "x-apisports-key": API_KEY,
+          "x-apisports-host": API_HOST
+        }
+      });
+
+      const data = await res.json();
+
+      if (data.response) {
+        return data.response;
+      }
+      return null;
+    } catch (error) {
+      console.error('❌ Fetch team statistics failed:', error.message);
+      return null;
+    }
+  };
+
+  // Función para obtener predicciones de un partido
+  const fetchMatchPredictions = async (fixtureId) => {
+    const target = `/predictions?fixture=${fixtureId}`;
+
+    try {
+      console.log(`🎯 Fetching predictions for fixture ${fixtureId}...`);
+
+      const res = await fetch(target, {
+        headers: {
+          "x-apisports-key": API_KEY,
+          "x-apisports-host": API_HOST
+        }
+      });
+
+      const data = await res.json();
+      console.log('📊 Predictions Response:', data);
+
+      if (data.errors && Object.keys(data.errors).length > 0) {
+        console.error('❌ API Error:', data.errors);
+        return null;
+      }
+
+      if (data.response?.[0]) {
+        console.log('✅ Predictions loaded successfully');
+        return data.response[0];
+      }
+
+      return null;
+    } catch (error) {
+      console.error('❌ Fetch predictions failed:', error.message);
+      return null;
+    }
+  };
+
+  // Función principal para cargar todos los datos de un equipo favorito
+  // Función principal para cargar todos los datos de un equipo favorito
+  const loadFavoriteTeamData = async (teamId, leagueId) => {
+    setLoadingTeamData(true);
+
+    try {
+      console.log(`🚀 Loading optimized data for team ${teamId}...`);
+
+
+
+      // OPTIMIZACIÓN: Ejecutar Fixtures y Estadísticas en PARALELO
+      const [fixtures, statistics] = await Promise.all([
+        fetchTeamFixtures(teamId),
+        fetchTeamStatistics(teamId, leagueId)
+      ]);
+
+      // Obtener predicciones en PARALELO para los partidos encontrados
+      let predictions = {};
+      if (fixtures && fixtures.length > 0) {
+        // Limitamos a los primeros 3 partidos para no saturar
+        const fixtureIds = fixtures.slice(0, 3).map(f => f.fixture.id);
+
+        console.log(`🎯 Fetching predictions for ${fixtureIds.length} matches in parallel...`);
+
+        const predictionPromises = fixtureIds.map(id => fetchMatchPredictions(id));
+        const predictionResults = await Promise.all(predictionPromises);
+
+        fixtureIds.forEach((id, index) => {
+          if (predictionResults[index]) {
+            predictions[id] = predictionResults[index];
+          }
+        });
+      }
+
+      setTeamData(prev => ({
+        ...prev,
+        [teamId]: {
+          fixtures: fixtures || [],
+          predictions,
+          statistics: statistics || null
+        }
+      }));
+
+    } catch (error) {
+      console.error('❌ Error loading team data:', error);
+      alert(`Error al cargar datos: ${error.message}. Revisa la consola (F12) para más detalles.`);
+    } finally {
+      setLoadingTeamData(false);
+    }
+  };
+
+
   useEffect(() => {
     if (user && view === 'dashboard') fetchMatches(selectedLeague.id);
   }, [selectedLeague, user, view]);
 
   const toggleFavorite = async (team) => {
-  if (!user?.id) return;
+    if (!user?.id) return;
 
-  const exists = favorites.find(f => f.id === team.id);
+    const exists = favorites.find(f => f.id === team.id);
 
-  if (exists) {
-    await supabase
-      .from("favorites")
-      .delete()
-      .eq("user_id", user.id)
-      .eq("team_id", team.id);
+    if (exists) {
+      await supabase
+        .from("favorites")
+        .delete()
+        .eq("user_id", user.id)
+        .eq("team_id", team.id);
 
-    setFavorites(favorites.filter(f => f.id !== team.id));
-  } else {
-    await supabase.from("favorites").insert([{
-      user_id: user.id,
-      team_id: team.id,
-      team_name: team.name,
-      team_logo: team.logo
-    }]);
+      setFavorites(favorites.filter(f => f.id !== team.id));
+    } else {
+      const { error } = await supabase.from("favorites").insert([{
+        user_id: user.id,
+        team_id: team.id,
+        team_name: [team.name],
+        team_logo: team.logo
+      }]);
 
-    setFavorites([...favorites, team]);
-  }
-};
+      if (error) {
+        if (error.code === '23505') { // Código Postgres para unique_violation
+          console.warn('⚠️ El favorito ya existía en la BD, sincronizado localmente.');
+        } else {
+          console.error('❌ Error guardando favorito:', error);
+        }
+      }
+
+      setFavorites([...favorites, team]);
+    }
+  };
 
 
   const filteredTeams = useMemo(() => {
@@ -260,10 +446,10 @@ const loadUserData = async (userId) => {
     const results = [];
     Object.keys(MOCK_TEAMS).forEach(leagueId => {
       const teams = MOCK_TEAMS[leagueId];
-      for(let i=0; i < teams.length; i+=2) {
+      for (let i = 0; i < teams.length; i += 2) {
         const home = teams[i];
-        const away = teams[i+1];
-        if(favIds.includes(home.id) || favIds.includes(away.id)) {
+        const away = teams[i + 1];
+        if (favIds.includes(home.id) || favIds.includes(away.id)) {
           const m = {
             fixture: { id: 9000 + home.id, status: { short: 'NS' }, date: new Date().toISOString() },
             league: LIGAS.find(l => l.id === parseInt(leagueId)),
@@ -280,44 +466,43 @@ const loadUserData = async (userId) => {
     return (
       <div className="min-h-screen bg-slate-950 flex items-center justify-center p-6 bg-[radial-gradient(circle_at_top_right,_var(--tw-gradient-stops))] from-emerald-900/20 via-slate-950 to-slate-950">
         <div className="w-full max-w-md text-center relative z-10">
-            <div className="inline-flex p-4 bg-emerald-600 rounded-2xl shadow-2xl shadow-emerald-500/20 mb-6">
-              <Trophy className="text-white w-10 h-10" />
-            </div>
-            <h1 className="text-4xl font-black text-white tracking-tighter uppercase italic mb-10">SportAI <span className="text-emerald-500">Copilot</span></h1>
-            
+          <div className="inline-flex p-4 bg-emerald-600 rounded-2xl shadow-2xl shadow-emerald-500/20 mb-6">
+            <Trophy className="text-white w-10 h-10" />
+          </div>
+          <h1 className="text-4xl font-black text-white tracking-tighter uppercase italic mb-10">SportAI <span className="text-emerald-500">Copilot</span></h1>
+
           <form onSubmit={handleLogin} className="bg-slate-900/80 backdrop-blur-xl border border-white/5 p-8 rounded-[2.5rem] space-y-6 text-left">
             <div className="space-y-4">
-              <input 
-                type="text" 
-                required 
-                className="w-full bg-slate-950/50 border border-slate-800 rounded-2xl px-5 py-4 text-white placeholder:text-slate-700 outline-none focus:border-emerald-500/50 transition-all" 
-                placeholder="Email" 
-                value={authForm.user} 
-                onChange={e => setAuthForm({...authForm, user: e.target.value})} 
+              <input
+                type="text"
+                required
+                className="w-full bg-slate-950/50 border border-slate-800 rounded-2xl px-5 py-4 text-white placeholder:text-slate-700 outline-none focus:border-emerald-500/50 transition-all"
+                placeholder="Email"
+                value={authForm.user}
+                onChange={e => setAuthForm({ ...authForm, user: e.target.value })}
               />
-              <input 
-                type="password" 
-                required 
-                className="w-full bg-slate-950/50 border border-slate-800 rounded-2xl px-5 py-4 text-white placeholder:text-slate-700 outline-none focus:border-emerald-500/50 transition-all" 
-                placeholder="••••••••" 
-                value={authForm.pass} 
-                onChange={e => setAuthForm({...authForm, pass: e.target.value})} 
+              <input
+                type="password"
+                required
+                className="w-full bg-slate-950/50 border border-slate-800 rounded-2xl px-5 py-4 text-white placeholder:text-slate-700 outline-none focus:border-emerald-500/50 transition-all"
+                placeholder="••••••••"
+                value={authForm.pass}
+                onChange={e => setAuthForm({ ...authForm, pass: e.target.value })}
               />
             </div>
 
             {connStatus.type && (
-              <div className={`p-4 rounded-2xl border flex items-center gap-3 animate-in fade-in zoom-in duration-300 ${
-                connStatus.type === 'success' ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' :
+              <div className={`p-4 rounded-2xl border flex items-center gap-3 animate-in fade-in zoom-in duration-300 ${connStatus.type === 'success' ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' :
                 connStatus.type === 'error' ? 'bg-rose-500/10 border-rose-500/20 text-rose-400' :
-                'bg-blue-500/10 border-blue-500/20 text-blue-400'
-              }`}>
+                  'bg-blue-500/10 border-blue-500/20 text-blue-400'
+                }`}>
                 {connStatus.type === 'testing' ? <Loader2 className="animate-spin shrink-0" size={16} /> : <AlertTriangle className="shrink-0" size={16} />}
                 <p className="text-[10px] font-black uppercase tracking-widest leading-relaxed">{connStatus.message}</p>
               </div>
             )}
-            
-            <button 
-              type="submit" 
+
+            <button
+              type="submit"
               disabled={loading}
               className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-black py-5 rounded-2xl transition-all uppercase tracking-widest text-xs shadow-xl shadow-emerald-600/20 flex items-center justify-center gap-3"
             >
@@ -355,7 +540,7 @@ const loadUserData = async (userId) => {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-200">
-      <aside 
+      <aside
         onMouseEnter={() => setSidebarHover(true)}
         onMouseLeave={() => setSidebarHover(false)}
         className={`fixed left-0 top-0 h-full bg-slate-900/80 backdrop-blur-3xl border-r border-white/5 flex flex-col z-50 transition-all duration-300 ${sidebarHover ? 'w-80 shadow-[20px_0_50px_rgba(0,0,0,0.5)]' : 'w-20'}`}
@@ -366,15 +551,15 @@ const loadUserData = async (userId) => {
           </div>
           {sidebarHover && <span className="font-black text-xl tracking-tighter text-white italic uppercase animate-in fade-in">SportAI</span>}
         </div>
-        
+
         <nav className="flex-1 px-4 space-y-3 mt-8">
           {[
             { id: 'dashboard', icon: LayoutDashboard, label: 'Dashboard' },
             { id: 'favorites', icon: Heart, label: 'Mis Favoritos' },
             { id: 'history', icon: History, label: 'Historial' }
           ].map(item => (
-            <button key={item.id} onClick={() => {setView(item.id); setSelectedMatch(null); setSearchTerm("");}} className={`w-full flex items-center gap-4 px-5 py-4 rounded-2xl transition-all ${view === item.id ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-600/20' : 'text-slate-500 hover:bg-slate-800 hover:text-white'} ${!sidebarHover && 'justify-center px-0'}`}>
-              <item.icon size={20} className="shrink-0" /> 
+            <button key={item.id} onClick={() => { setView(item.id); setSelectedMatch(null); setSearchTerm(""); }} className={`w-full flex items-center gap-4 px-5 py-4 rounded-2xl transition-all ${view === item.id ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-600/20' : 'text-slate-500 hover:bg-slate-800 hover:text-white'} ${!sidebarHover && 'justify-center px-0'}`}>
+              <item.icon size={20} className="shrink-0" />
               {sidebarHover && <span className="font-black text-xs uppercase tracking-widest animate-in fade-in">{item.label}</span>}
             </button>
           ))}
@@ -382,14 +567,14 @@ const loadUserData = async (userId) => {
 
         <div className={`p-6 transition-all ${!sidebarHover && 'px-4'}`}>
           <button onClick={async () => {
-  await supabase.auth.signOut();
-  setUser(null);
-  setView("login");
-  setConnStatus({ type: null, message: "" });
-}}
+            await supabase.auth.signOut();
+            setUser(null);
+            setView("login");
+            setConnStatus({ type: null, message: "" });
+          }}
 
-          className={`w-full flex items-center gap-4 px-5 py-4 rounded-2xl text-rose-500 hover:bg-rose-500/10 transition-all ${!sidebarHover && 'justify-center px-0'}`}>
-            <LogOut size={20} className="shrink-0" /> 
+            className={`w-full flex items-center gap-4 px-5 py-4 rounded-2xl text-rose-500 hover:bg-rose-500/10 transition-all ${!sidebarHover && 'justify-center px-0'}`}>
+            <LogOut size={20} className="shrink-0" />
             {sidebarHover && <span className="font-black text-xs uppercase tracking-widest animate-in fade-in">Salir</span>}
           </button>
         </div>
@@ -397,35 +582,35 @@ const loadUserData = async (userId) => {
 
       <main className={`p-6 lg:p-12 pb-32 transition-all duration-300 ${sidebarHover ? 'ml-80 opacity-50' : 'ml-20'}`}>
         <header className="mb-10 animate-in fade-in slide-in-from-top-4 duration-700">
-           <div className="flex items-center gap-2 mb-2">
-              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-              <span className="text-[10px] font-black text-emerald-500 uppercase tracking-[0.3em]">
-                {view === 'favorites' ? 'Módulo de Seguimiento Personalizado' : 'IA Predictiva Activa'}
-              </span>
-            </div>
-            <h1 className="text-5xl font-black text-white tracking-tighter italic uppercase">
-              {view === 'favorites' ? 'Mis Favoritos' : (view === 'history' ? 'Historial de Valor' : `Hola, ${user.name}`)}
-            </h1>
+          <div className="flex items-center gap-2 mb-2">
+            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+            <span className="text-[10px] font-black text-emerald-500 uppercase tracking-[0.3em]">
+              {view === 'favorites' ? 'Módulo de Seguimiento Personalizado' : 'IA Predictiva Activa'}
+            </span>
+          </div>
+          <h1 className="text-5xl font-black text-white tracking-tighter italic uppercase">
+            {view === 'favorites' ? 'Mis Favoritos' : (view === 'history' ? 'Historial de Valor' : `Hola, ${user.name}`)}
+          </h1>
         </header>
 
         {view === 'favorites' && !selectedMatch && (
           <div className="space-y-12 animate-in fade-in slide-in-from-bottom-4 duration-500">
-            
+
             {/* BUSCADOR INTEGRADO MEJORADO */}
             <section className="bg-slate-900/60 border border-white/5 p-8 rounded-[3rem] relative overflow-visible z-30">
-               <div className="flex items-center gap-3 mb-6">
+              <div className="flex items-center gap-3 mb-6">
                 <Search className="text-emerald-500" size={18} />
                 <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.4em]">Buscar Nuevos Equipos MVP</h3>
               </div>
               <div className="relative">
-                <input 
-                  type="text" 
+                <input
+                  type="text"
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
                   placeholder="Escribe el nombre de un equipo (Ej: Real Madrid, Man City...)"
                   className="w-full bg-slate-950/50 border border-slate-800 rounded-3xl px-8 py-6 text-lg text-white placeholder:text-slate-700 outline-none focus:border-emerald-500/50 transition-all"
                 />
-                
+
                 {/* LISTA DE RESULTADOS FLOTANTE */}
                 {searchTerm && (
                   <div className="absolute top-[calc(100%+12px)] left-0 right-0 bg-slate-900 border border-white/10 rounded-[2rem] shadow-[0_30px_60px_-15px_rgba(0,0,0,0.8)] z-50 max-h-80 overflow-y-auto backdrop-blur-3xl animate-in fade-in slide-in-from-top-2 duration-200">
@@ -434,8 +619,8 @@ const loadUserData = async (userId) => {
                         {filteredTeams.map(team => {
                           const isFav = favorites.find(f => f.id === team.id);
                           return (
-                            <button 
-                              key={team.id} 
+                            <button
+                              key={team.id}
                               onClick={() => { toggleFavorite(team); setSearchTerm(""); }}
                               className="w-full flex items-center justify-between p-4 px-6 hover:bg-emerald-600/10 rounded-2xl transition-all group mb-1 last:mb-0"
                             >
@@ -463,65 +648,202 @@ const loadUserData = async (userId) => {
               </div>
             </section>
 
-            {/* EQUIPOS ESCOGIDOS */}
+            {/* EQUIPOS FAVORITOS CON DATOS REALES */}
             {favorites.length > 0 && (
               <section className="animate-in fade-in delay-100">
                 <div className="flex items-center gap-3 mb-6">
                   <Heart className="text-rose-500 fill-rose-500" size={18} />
-                  <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.4em]">Equipos en Seguimiento</h3>
+                  <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.4em]">
+                    Equipos en Seguimiento
+                  </h3>
                 </div>
-                <div className="flex flex-wrap gap-4">
-                  {favorites.map(team => (
-                    <div key={team.id} className="bg-slate-900/40 border border-white/5 px-6 py-4 rounded-2xl flex items-center gap-4 group hover:border-emerald-500/30 transition-all">
-                      <img src={team.logo} className="w-6 h-6 object-contain" />
-                      <span className="text-xs font-black text-white uppercase italic">{team.name}</span>
-                      <button onClick={() => toggleFavorite(team)} className="text-slate-600 hover:text-rose-500 transition-colors p-1">
-                        <X size={14} />
-                      </button>
-                    </div>
-                  ))}
+
+                <div className="space-y-8">
+                  {favorites.map(team => {
+                    const data = teamData[team.id];
+                    const hasData = data && data.fixtures && data.fixtures.length > 0;
+
+                    return (
+                      <div key={team.id} className="bg-slate-900/40 border border-white/5 rounded-[3rem] p-8 space-y-6">
+
+                        {/* HEADER DEL EQUIPO */}
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-4">
+                            <img src={team.logo} className="w-12 h-12 object-contain" alt={team.name} />
+                            <div>
+                              <h4 className="text-xl font-black text-white uppercase italic">{team.name}</h4>
+                              {data?.statistics && (
+                                <p className="text-xs text-slate-500 uppercase font-bold mt-1">
+                                  Forma: {data.statistics.form || 'N/A'}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="flex gap-3">
+                            {!hasData && (
+                              <button
+                                onClick={() => {
+                                  console.log('🔘 Clicked load data for:', team.name, 'ID:', team.id);
+
+                                  // Intentar determinar la liga desde MOCK_TEAMS como fallback
+                                  let leagueId = 140;
+                                  const foundLeagueId = Object.keys(MOCK_TEAMS).find(lid =>
+                                    MOCK_TEAMS[lid].some(t => t.id === team.id)
+                                  );
+                                  if (foundLeagueId) leagueId = parseInt(foundLeagueId);
+
+                                  console.log('📌 Identified League ID:', leagueId);
+                                  loadFavoriteTeamData(team.id, leagueId);
+                                }}
+                                disabled={loadingTeamData}
+                                className="px-6 py-3 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-black text-xs uppercase rounded-2xl transition-all"
+                              >
+                                {loadingTeamData ? 'Cargando...' : 'Cargar Datos Reales'}
+                              </button>
+                            )}
+                            <button
+                              onClick={() => toggleFavorite(team)}
+                              className="text-slate-600 hover:text-rose-500 transition-colors p-3"
+                            >
+                              <X size={18} />
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* ESTADÍSTICAS DEL EQUIPO */}
+                        {data?.statistics && (
+                          <div className="grid grid-cols-4 gap-4 p-6 bg-slate-950/50 rounded-2xl">
+                            <div className="text-center">
+                              <div className="text-2xl font-black text-emerald-500">
+                                {data.statistics.fixtures?.played?.total || 0}
+                              </div>
+                              <div className="text-[9px] text-slate-500 uppercase font-bold mt-1">
+                                Partidos
+                              </div>
+                            </div>
+                            <div className="text-center">
+                              <div className="text-2xl font-black text-emerald-500">
+                                {data.statistics.fixtures?.wins?.total || 0}
+                              </div>
+                              <div className="text-[9px] text-slate-500 uppercase font-bold mt-1">
+                                Victorias
+                              </div>
+                            </div>
+                            <div className="text-center">
+                              <div className="text-2xl font-black text-emerald-500">
+                                {data.statistics.goals?.for?.total?.total || 0}
+                              </div>
+                              <div className="text-[9px] text-slate-500 uppercase font-bold mt-1">
+                                Goles a Favor
+                              </div>
+                            </div>
+                            <div className="text-center">
+                              <div className="text-2xl font-black text-rose-500">
+                                {data.statistics.goals?.against?.total?.total || 0}
+                              </div>
+                              <div className="text-[9px] text-slate-500 uppercase font-bold mt-1">
+                                Goles en Contra
+                              </div>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* PRÓXIMOS/ÚLTIMOS 3 PARTIDOS */}
+                        {hasData && (
+                          <div className="space-y-4">
+                            <h5 className="text-xs font-black text-slate-400 uppercase tracking-widest">
+                              Próximos Partidos
+                            </h5>
+
+                            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                              {data.fixtures.map(fixture => {
+                                const prediction = data.predictions[fixture.fixture.id];
+                                const matchDate = new Date(fixture.fixture.date);
+                                const goals = fixture.goals; // Goles del partido
+
+                                return (
+                                  <div
+                                    key={fixture.fixture.id}
+                                    className="bg-slate-950/50 border border-white/5 rounded-2xl p-6 space-y-4"
+                                  >
+                                    {/* Fecha */}
+                                    <div className="text-center text-[9px] text-slate-500 uppercase font-bold">
+                                      {matchDate.toLocaleDateString('es-ES', {
+                                        day: '2-digit',
+                                        month: 'short',
+                                        year: 'numeric'
+                                      })}
+                                    </div>
+
+                                    {/* Equipos y Marcador */}
+                                    <div className="flex items-center justify-between gap-3">
+                                      <div className="text-center flex-1">
+                                        <img
+                                          src={fixture.teams.home.logo}
+                                          className="w-10 h-10 mx-auto mb-2"
+                                          alt={fixture.teams.home.name}
+                                        />
+                                        <div className="text-[9px] font-black text-white uppercase truncate">
+                                          {fixture.teams.home.name}
+                                        </div>
+                                      </div>
+
+                                      <div className="text-slate-700 font-black text-sm">VS</div>
+
+                                      <div className="text-center flex-1">
+                                        <img
+                                          src={fixture.teams.away.logo}
+                                          className="w-10 h-10 mx-auto mb-2"
+                                          alt={fixture.teams.away.name}
+                                        />
+                                        <div className="text-[9px] font-black text-white uppercase truncate">
+                                          {fixture.teams.away.name}
+                                        </div>
+                                      </div>
+                                    </div>
+
+                                    {/* Predicción */}
+                                    {prediction && (
+                                      <div className="pt-4 border-t border-white/5 space-y-2">
+                                        <div className="text-[9px] text-slate-500 uppercase font-bold text-center">
+                                          Mejor Apuesta
+                                        </div>
+                                        <div className="bg-emerald-600/10 border border-emerald-500/20 rounded-xl p-3 text-center">
+                                          <div className="text-xs font-black text-emerald-500 uppercase">
+                                            {prediction.predictions?.advice || 'N/A'}
+                                          </div>
+                                          {prediction.predictions?.percent && (
+                                            <div className="text-[9px] text-slate-400 mt-1">
+                                              1: {prediction.predictions.percent.home} |
+                                              X: {prediction.predictions.percent.draw} |
+                                              2: {prediction.predictions.percent.away}
+                                            </div>
+                                          )}
+                                        </div>
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* MENSAJE SI NO HAY DATOS */}
+                        {!hasData && !loadingTeamData && (
+                          <div className="text-center py-8 text-slate-600 text-xs uppercase font-bold">
+                            Haz clic en "Cargar Datos Reales" para ver próximos partidos y estadísticas
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               </section>
             )}
-
-            {/* PRONÓSTICOS DE FAVORITOS */}
-            <section className="animate-in fade-in delay-200">
-              <div className="flex items-center gap-3 mb-8">
-                <Target className="text-emerald-500" size={18} />
-                <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.4em]">Predicciones para tus Equipos</h3>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 2xl:grid-cols-3 gap-6">
-                {favoriteMatches.length > 0 ? favoriteMatches.map(match => (
-                  <div key={match.fixture.id} onClick={() => setSelectedMatch(match)} className="group bg-slate-900/40 border border-white/5 rounded-[3rem] p-8 hover:bg-slate-900/80 hover:border-emerald-500/40 transition-all cursor-pointer relative overflow-hidden">
-                    <div className="flex justify-between items-center mb-8">
-                       <span className="text-[9px] font-black text-slate-500 tracking-widest uppercase">{match.league.name}</span>
-                       <div className="px-3 py-1 bg-emerald-600/10 text-emerald-400 text-[10px] font-black rounded-full border border-emerald-500/20">{match.aiConfidence}% ACCURACY</div>
-                    </div>
-                    <div className="flex items-center justify-between gap-4 mb-8">
-                      <div className="text-center flex-1">
-                        <img src={match.teams.home.logo} className="w-16 h-16 mx-auto mb-3" />
-                        <div className="font-black text-[10px] uppercase text-white truncate">{match.teams.home.name}</div>
-                      </div>
-                      <div className="text-slate-800 font-black italic text-xl">VS</div>
-                      <div className="text-center flex-1">
-                        <img src={match.teams.away.logo} className="w-16 h-16 mx-auto mb-3" />
-                        <div className="font-black text-[10px] uppercase text-white truncate">{match.teams.away.name}</div>
-                      </div>
-                    </div>
-                    <div className="pt-6 border-t border-white/5 flex justify-between items-center text-slate-600">
-                      <span className="text-[9px] font-black uppercase tracking-widest group-hover:text-emerald-500 transition-colors">Ver Análisis IA</span>
-                      <ChevronRight size={18} className="group-hover:text-emerald-500 transition-colors" />
-                    </div>
-                  </div>
-                )) : (
-                  <div className="col-span-full py-20 bg-slate-900/20 border border-dashed border-white/5 rounded-[3rem] flex flex-col items-center text-center opacity-40">
-                    <Target size={48} className="text-slate-700 mb-4" />
-                    <p className="text-xs font-black uppercase tracking-[0.4em] text-slate-500">Añade equipos arriba para ver sus predicciones de hoy</p>
-                  </div>
-                )}
-              </div>
-            </section>
           </div>
+
         )}
 
         {view === 'dashboard' && !selectedMatch && (
@@ -548,9 +870,9 @@ const loadUserData = async (userId) => {
             <div className="flex justify-center mb-10">
               <div className="flex flex-wrap justify-center gap-2 p-2 bg-slate-900/60 rounded-[2.5rem] border border-white/5 overflow-x-auto max-w-full">
                 {LIGAS.map(league => (
-                  <button 
-                    key={league.id} 
-                    onClick={() => setSelectedLeague(league)} 
+                  <button
+                    key={league.id}
+                    onClick={() => setSelectedLeague(league)}
                     className={`flex items-center gap-3 px-6 py-3 rounded-full text-[10px] font-black uppercase transition-all whitespace-nowrap ${selectedLeague.id === league.id ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-600/20' : 'text-slate-500 hover:bg-slate-800'}`}
                   >
                     <img src={league.logo} className="w-4 h-4 object-contain" /> {league.name}
@@ -567,8 +889,8 @@ const loadUserData = async (userId) => {
               ) : matches.map(match => (
                 <div key={match.fixture.id} onClick={() => setSelectedMatch(match)} className="group bg-slate-900/40 border border-white/5 rounded-[3rem] p-8 hover:bg-slate-900/80 hover:border-emerald-500/40 transition-all cursor-pointer relative overflow-hidden">
                   <div className="flex justify-between items-center mb-8">
-                     <span className="text-[9px] font-black text-slate-500 uppercase">{match.league.name}</span>
-                     <div className="px-3 py-1 bg-emerald-600/10 text-emerald-400 text-[10px] font-black rounded-full">{match.aiConfidence}%</div>
+                    <span className="text-[9px] font-black text-slate-500 uppercase">{match.league.name}</span>
+                    <div className="px-3 py-1 bg-emerald-600/10 text-emerald-400 text-[10px] font-black rounded-full">{match.aiConfidence}%</div>
                   </div>
                   <div className="flex items-center justify-between gap-4 mb-8">
                     <div className="text-center flex-1">
@@ -597,15 +919,15 @@ const loadUserData = async (userId) => {
               <ChevronRight className="rotate-180" size={14} /> REGRESAR
             </button>
             <div className="bg-gradient-to-br from-emerald-700/20 via-slate-900 to-slate-950 border border-emerald-500/20 rounded-[4rem] p-12 mb-10 flex flex-col md:flex-row items-center justify-around gap-10">
-               <div className="text-center">
-                 <img src={selectedMatch.teams.home.logo} className="w-32 h-32 mx-auto mb-4" />
-                 <h2 className="text-3xl font-black text-white uppercase italic">{selectedMatch.teams.home.name}</h2>
-               </div>
-               <div className="text-5xl font-black text-slate-800 italic tracking-tighter">VS</div>
-               <div className="text-center">
-                 <img src={selectedMatch.teams.away.logo} className="w-32 h-32 mx-auto mb-4" />
-                 <h2 className="text-3xl font-black text-white uppercase italic">{selectedMatch.teams.away.name}</h2>
-               </div>
+              <div className="text-center">
+                <img src={selectedMatch.teams.home.logo} className="w-32 h-32 mx-auto mb-4" />
+                <h2 className="text-3xl font-black text-white uppercase italic">{selectedMatch.teams.home.name}</h2>
+              </div>
+              <div className="text-5xl font-black text-slate-800 italic tracking-tighter">VS</div>
+              <div className="text-center">
+                <img src={selectedMatch.teams.away.logo} className="w-32 h-32 mx-auto mb-4" />
+                <h2 className="text-3xl font-black text-white uppercase italic">{selectedMatch.teams.away.name}</h2>
+              </div>
             </div>
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
               {selectedMatch.aiScenarios.map((s) => (
@@ -614,35 +936,35 @@ const loadUserData = async (userId) => {
                   <div className="text-5xl font-black text-white italic mb-4">{s.prob}%</div>
                   <h4 className="text-lg font-black text-white uppercase mb-2 leading-tight">{s.label}</h4>
                   <div className="bg-emerald-500/10 text-emerald-500 px-3 py-1 rounded-full text-[10px] font-black border border-emerald-500/10 inline-block mb-8 tracking-widest uppercase">Cuota {s.odds}</div>
-                  <button  onClick={async () => {
-  if (!user?.id) return;
+                  <button onClick={async () => {
+                    if (!user?.id) return;
 
-  const payload = {
-    user_id: user.id,
-    match: `${selectedMatch.teams.home.name} vs ${selectedMatch.teams.away.name}`,
-    scenario: s.label,
-    prob: s.prob,
-    status: "pending"
-  };
+                    const payload = {
+                      user_id: user.id,
+                      match: `${selectedMatch.teams.home.name} vs ${selectedMatch.teams.away.name}`,
+                      scenario: s.label,
+                      prob: s.prob,
+                      status: "pending"
+                    };
 
-  const { data, error } = await supabase
-    .from("history")
-    .insert([payload])
-    .select()
-    .single();
+                    const { data, error } = await supabase
+                      .from("history")
+                      .insert([payload])
+                      .select()
+                      .single();
 
-  if (!error && data) {
-    setSavedAnalysis([{
-      id: data.id,
-      match: data.match,
-      scenario: data.scenario,
-      prob: data.prob,
-      status: data.status
-    }, ...savedAnalysis]);
-  }
-}}
+                    if (!error && data) {
+                      setSavedAnalysis([{
+                        id: data.id,
+                        match: data.match,
+                        scenario: data.scenario,
+                        prob: data.prob,
+                        status: data.status
+                      }, ...savedAnalysis]);
+                    }
+                  }}
 
-                  className="w-full bg-slate-950 hover:bg-emerald-600 text-slate-400 hover:text-white py-4 rounded-2xl font-black text-[10px] uppercase tracking-widest transition-all">Fijar Predicción
+                    className="w-full bg-slate-950 hover:bg-emerald-600 text-slate-400 hover:text-white py-4 rounded-2xl font-black text-[10px] uppercase tracking-widest transition-all">Fijar Predicción
                   </button>
                 </div>
               ))}
@@ -665,16 +987,16 @@ const loadUserData = async (userId) => {
                 </div>
                 <div className="flex gap-2">
                   <button onClick={async () => {
-  await supabase.from("history").update({ status: "won" }).eq("id", item.id);
-  setSavedAnalysis(savedAnalysis.map(a => a.id === item.id ? { ...a, status: "won" } : a));
-}}
- className={`w-10 h-10 rounded-lg flex items-center justify-center transition-all ${item.status === 'won' ? 'bg-emerald-600' : 'bg-slate-950 text-slate-700'}`}><CheckCircle2 size={16} /></button>
+                    await supabase.from("history").update({ status: "won" }).eq("id", item.id);
+                    setSavedAnalysis(savedAnalysis.map(a => a.id === item.id ? { ...a, status: "won" } : a));
+                  }}
+                    className={`w-10 h-10 rounded-lg flex items-center justify-center transition-all ${item.status === 'won' ? 'bg-emerald-600' : 'bg-slate-950 text-slate-700'}`}><CheckCircle2 size={16} /></button>
                   <button onClick={async () => {
-  await supabase.from("history").update({ status: "lost" }).eq("id", item.id);
-  setSavedAnalysis(savedAnalysis.map(a => a.id === item.id ? { ...a, status: "lost" } : a));
-}}
+                    await supabase.from("history").update({ status: "lost" }).eq("id", item.id);
+                    setSavedAnalysis(savedAnalysis.map(a => a.id === item.id ? { ...a, status: "lost" } : a));
+                  }}
 
-                  className={`w-10 h-10 rounded-lg flex items-center justify-center transition-all ${item.status === 'lost' ? 'bg-rose-600' : 'bg-slate-950 text-slate-700'}`}><XCircle size={16} /></button>
+                    className={`w-10 h-10 rounded-lg flex items-center justify-center transition-all ${item.status === 'lost' ? 'bg-rose-600' : 'bg-slate-950 text-slate-700'}`}><XCircle size={16} /></button>
                 </div>
               </div>
             )) : (
